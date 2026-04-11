@@ -1,0 +1,46 @@
+2026-04-11 06:24:53,827  INFO     ============================================================
+2026-04-11 06:24:53,827  INFO     Gwinnett Motivated Seller Scraper
+2026-04-11 06:24:53,828  INFO     Clerk portal   : https://www.gwinnettcourts.com/deeds-and-land-records/
+2026-04-11 06:24:53,828  INFO     Real estate    : https://search.gsccca.org/RealEstate/namesearch.asp
+2026-04-11 06:24:53,828  INFO     Lien search    : https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:24:53,828  INFO     Parcel bulk url: <not provided>
+2026-04-11 06:24:53,828  INFO     Range          : 04/04/2026 -> 04/11/2026 (7 days)
+2026-04-11 06:24:53,828  INFO     Types          : LP, NOFC, TAXDEED, JUD, CCJ, DRJUD, LNCORPTX, LNIRS, LNFED, LN, LNMECH, LNHOA, MEDLN, PRO, NOC, RELLP
+2026-04-11 06:24:53,828  INFO     ============================================================
+2026-04-11 06:24:53,828  WARNING  PROPERTY_APPRAISER_BULK_DATA_URL is blank. Parcel enrichment will be skipped.
+2026-04-11 06:24:54,408  INFO     Searching LP on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:03,003  INFO     LP page 1 -> 0 rows
+2026-04-11 06:25:03,025  INFO     Searching NOFC on https://search.gsccca.org/RealEstate/namesearch.asp
+2026-04-11 06:25:09,290  INFO     NOFC page 1 -> 0 rows
+2026-04-11 06:25:09,310  INFO     Searching TAXDEED on https://search.gsccca.org/RealEstate/namesearch.asp
+2026-04-11 06:25:15,467  INFO     TAXDEED page 1 -> 0 rows
+2026-04-11 06:25:15,486  INFO     Searching JUD on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:21,674  INFO     JUD page 1 -> 0 rows
+2026-04-11 06:25:21,694  INFO     Searching CCJ on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:29,075  INFO     CCJ page 1 -> 0 rows
+2026-04-11 06:25:29,095  INFO     Searching DRJUD on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:35,476  INFO     DRJUD page 1 -> 0 rows
+2026-04-11 06:25:35,495  INFO     Searching LNCORPTX on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:41,375  INFO     LNCORPTX page 1 -> 0 rows
+2026-04-11 06:25:41,395  INFO     Searching LNIRS on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:47,314  INFO     LNIRS page 1 -> 0 rows
+2026-04-11 06:25:47,332  INFO     Searching LNFED on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:53,275  INFO     LNFED page 1 -> 0 rows
+2026-04-11 06:25:53,294  INFO     Searching LN on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:25:59,298  INFO     LN page 1 -> 0 rows
+2026-04-11 06:25:59,318  INFO     Searching LNMECH on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:26:05,279  INFO     LNMECH page 1 -> 0 rows
+2026-04-11 06:26:05,298  INFO     Searching LNHOA on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:26:11,473  INFO     LNHOA page 1 -> 0 rows
+2026-04-11 06:26:11,491  INFO     Searching MEDLN on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:26:17,441  INFO     MEDLN page 1 -> 0 rows
+2026-04-11 06:26:17,460  INFO     Searching PRO on https://search.gsccca.org/RealEstate/namesearch.asp
+2026-04-11 06:26:23,682  INFO     PRO page 1 -> 0 rows
+2026-04-11 06:26:23,702  INFO     Searching NOC on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:26:29,642  INFO     NOC page 1 -> 0 rows
+2026-04-11 06:26:29,665  INFO     Searching RELLP on https://search.gsccca.org/Lien/namesearch.asp
+2026-04-11 06:26:35,469  INFO     RELLP page 1 -> 0 rows
+2026-04-11 06:26:35,536  INFO     Scraped 0 raw records before enrichment/dedupe
+2026-04-11 06:26:35,537  INFO     Wrote /home/runner/work/gwinnett-intel/gwinnett-intel/data/records.json and /home/runner/work/gwinnett-intel/gwinnett-intel/dashboard/records.json
+2026-04-11 06:26:35,537  INFO     Wrote /home/runner/work/gwinnett-intel/gwinnett-intel/data/ghl_export.csv
+2026-04-11 06:26:35,537  INFO     Done. Total leads: 0 | With address: 0
