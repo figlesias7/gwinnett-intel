@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Motivated Seller Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    .stats {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .card {
+      background: #1e293b;
+      padding: 15px;
+      border-radius: 8px;
+      flex: 1;
+    }
+    select {
+      padding: 8px;
+      margin-bottom: 20px;
+      background: #1e293b;
+      color: white;
+      border: none;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #1e293b;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px;
+      border-bottom: 1px solid #334155;
+      font-size: 14px;
+    }
+    th {
+      background: #020617;
+      text-align: left;
+    }
+    tr:hover {
+      background: #334155;
+    }
+    .high {
+      color: #22c55e;
+      font-weight: bold;
+    }
+    .mid {
+      color: #facc15;
+    }
+    .low {
+      color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Motivated Seller Leads</h1>
+
+<div class="stats">
+  <div class="card">
+    <h3>Total Leads</h3>
+    <div id="total">0</div>
+  </div>
+  <div class="card">
+    <h3>With Address</h3>
+    <div id="withAddress">0</div>
+  </div>
+  <div class="card">
+    <h3>High Score (70+)</h3>
+    <div id="highScore">0</div>
+  </div>
+</div>
+
+<select id="filter">
+  <option value="ALL">All</option>
+  <option value="LP">Lis Pendens</option>
+  <option value="NOFC">Foreclosure</option>
+  <option value="TAXDEED">Tax Deed</option>
+  <option value="JUD">Judgment</option>
+  <option value="LN">Lien</option>
+  <option value="PRO">Estate</option>
+</select>
+
+<table>
+  <thead>
+    <tr>
+      <th>Score</th>
+      <th>Type</th>
+      <th>Owner</th>
+      <th>Property</th>
+      <th>Mailing</th>
+      <th>Amount</th>
+      <th>Date</th>
+      <th>Link</th>
+    </tr>
+  </thead>
+  <tbody id="tableBody"></tbody>
+</table>
+
+<script>
+async function loadData() {
+  const res = await fetch('records.json');
+  const data = await res.json();
+
+  document.getElementById('total').innerText = data.total;
+  document.getElementById('withAddress').innerText = data.with_address;
+
+  const high = data.records.filter(r => r.score >= 70).length;
+  document.getElementById('highScore').innerText = high;
+
+  render(data.records);
+
+  document.getElementById('filter').addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (val === 'ALL') return render(data.records);
+    render(data.records.filter(r => r.cat === val));
+  });
+}
+
+function scoreClass(score) {
+  if (score >= 70) return 'high';
+  if (score >= 50) return 'mid';
+  return 'low';
+}
+
+function render(records) {
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+
+  records
+    .sort((a, b) => b.score - a.score)
+    .forEach(r => {
+      const row = `
+        <tr>
+          <td class="${scoreClass(r.score)}">${r.score}</td>
+          <td>${r.cat}</td>
+          <td>${r.owner}</td>
+          <td>${r.prop_address || ''}</td>
+          <td>${r.mail_address || ''}</td>
+          <td>${r.amount || ''}</td>
+          <td>${r.filed}</td>
+          <td><a href="${r.clerk_url}" target="_blank">View</a></td>
+        </tr>
+      `;
+      tbody.innerHTML += row;
+    });
+}
+
+loadData();
+</script>
+
+</body>
+</html>
