@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import time
+import urllib3
 import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
@@ -24,6 +25,7 @@ from dbfread import DBF
 from playwright.async_api import BrowserContext, Locator, Page, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -56,14 +58,11 @@ REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 HEADLESS = os.getenv("HEADLESS", "true").lower() != "false"
 
-# Fast test defaults so it does not run forever.
-# You can widen later:
-#   GSCCCA_PREFIXES=ABC
-#   CATEGORY_CODES=LP,PRO,NOFC
+# Keep this intentionally narrow until the first working run is confirmed.
+# Expand later after you see data.
 PREFIXES_ENV = os.getenv("GSCCCA_PREFIXES", "A").strip()
 CATEGORY_CODES_ENV = os.getenv("CATEGORY_CODES", "LP,PRO").strip()
 
-# Hard caps so one bad submit does not hang forever
 PER_SEARCH_TIMEOUT_MS = int(os.getenv("PER_SEARCH_TIMEOUT_MS", "5000"))
 PAGE_WAIT_MS = int(os.getenv("PAGE_WAIT_MS", "800"))
 MAX_PAGES_PER_PREFIX = int(os.getenv("MAX_PAGES_PER_PREFIX", "2"))
@@ -195,7 +194,13 @@ def retryable(fn):
                 return fn(*args, **kwargs)
             except Exception as exc:
                 last_exc = exc
-                logger.warning("Attempt %s/%s failed for %s: %s", attempt, MAX_RETRIES, fn.__name__, exc)
+                logger.warning(
+                    "Attempt %s/%s failed for %s: %s",
+                    attempt,
+                    MAX_RETRIES,
+                    fn.__name__,
+                    exc,
+                )
                 if attempt < MAX_RETRIES:
                     time.sleep(min(2 * attempt, 6))
         raise last_exc
@@ -210,7 +215,13 @@ def retryable_async(fn):
                 return await fn(*args, **kwargs)
             except Exception as exc:
                 last_exc = exc
-                logger.warning("Attempt %s/%s failed for %s: %s", attempt, MAX_RETRIES, fn.__name__, exc)
+                logger.warning(
+                    "Attempt %s/%s failed for %s: %s",
+                    attempt,
+                    MAX_RETRIES,
+                    fn.__name__,
+                    exc,
+                )
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(min(2 * attempt, 6))
         raise last_exc
@@ -336,18 +347,39 @@ def http_get(url: str, session: Optional[requests.Session] = None, **kwargs) -> 
     sess = session or requests.Session()
     headers = kwargs.pop("headers", {})
     headers.setdefault("User-Agent", USER_AGENT)
-    response = sess.get(url, timeout=REQUEST_TIMEOUT, headers=headers, **kwargs)
-    response.raise_for_status()
-    return response
+
+    try:
+        response = sess.get(url, timeout=REQUEST_TIMEOUT, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.SSLError:
+        logger.warning("SSL verification failed for %s. Retrying without certificate verification.", url)
+        response = sess.get(url, timeout=REQUEST_TIMEOUT, headers=headers, verify=False, **kwargs)
+        response.raise_for_status()
+        return response
 
 
 @retryable
 def http_post(url: str, session: requests.Session, data: Dict[str, Any], **kwargs) -> requests.Response:
     headers = kwargs.pop("headers", {})
     headers.setdefault("User-Agent", USER_AGENT)
-    response = session.post(url, timeout=REQUEST_TIMEOUT, headers=headers, data=data, **kwargs)
-    response.raise_for_status()
-    return response
+
+    try:
+        response = session.post(url, timeout=REQUEST_TIMEOUT, headers=headers, data=data, **kwargs)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.SSLError:
+        logger.warning("SSL verification failed for POST %s. Retrying without certificate verification.", url)
+        response = session.post(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers=headers,
+            data=data,
+            verify=False,
+            **kwargs,
+        )
+        response.raise_for_status()
+        return response
 
 
 @retryable
@@ -367,10 +399,15 @@ def download_property_bulk_data(url: str) -> Optional[bytes]:
         return response.content
 
     soup = BeautifulSoup(response.text, "lxml")
+
     for anchor in soup.find_all("a", href=True):
         href = clean_text(anchor["href"])
         if any(href.lower().endswith(ext) for ext in (".zip", ".dbf", ".xlsx")):
-            return http_get(urljoin(response.url, href), session=session, allow_redirects=True).content
+            return http_get(
+                urljoin(response.url, href),
+                session=session,
+                allow_redirects=True,
+            ).content
 
     postback_anchor = soup.find("a", href=re.compile(r"__doPostBack\(", re.I))
     if postback_anchor:
@@ -626,7 +663,6 @@ async def set_date_range_fields(page: Page, from_date: str, to_date: str) -> Non
     if from_input and to_input:
         await from_input.fill(from_date)
         await to_input.fill(to_date)
-        return
 
 
 async def set_name_prefix(page: Page, prefix: str) -> None:
