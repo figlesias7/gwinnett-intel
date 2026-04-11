@@ -33,7 +33,7 @@ TMP_DIR = BASE_DIR / ".tmp"
 LOG_DIR = BASE_DIR / ".logs"
 
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 HEADLESS = os.getenv("HEADLESS", "true").lower() != "false"
 
@@ -48,27 +48,23 @@ PROPERTY_APPRAISER_BULK_DATA_URL = os.getenv(
 ).strip()
 
 TARGET_COUNTY = os.getenv("TARGET_COUNTY", "Gwinnett").strip()
-MAX_RESULTS_PAGES = int(os.getenv("MAX_RESULTS_PAGES", "5"))
-PAGE_WAIT_MS = int(os.getenv("PAGE_WAIT_MS", "1200"))
-PER_SEARCH_TIMEOUT_MS = int(os.getenv("PER_SEARCH_TIMEOUT_MS", "12000"))
+
+# Hard runtime caps so it cannot wander forever.
+MAX_RESULTS_PAGES = int(os.getenv("MAX_RESULTS_PAGES", "1"))
+MAX_DETAIL_LINKS_PER_SEARCH = int(os.getenv("MAX_DETAIL_LINKS_PER_SEARCH", "5"))
+MAX_DETAIL_PAGES_TOTAL = int(os.getenv("MAX_DETAIL_PAGES_TOTAL", "10"))
+PER_SEARCH_TIMEOUT_MS = int(os.getenv("PER_SEARCH_TIMEOUT_MS", "4000"))
+PAGE_WAIT_MS = int(os.getenv("PAGE_WAIT_MS", "500"))
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Searches that are actually likely to return motivated-seller signals from public notices.
+# Keep this tight until proven.
 SEARCH_TERMS: List[Tuple[str, str]] = [
-    ("LP", "lis pendens"),
     ("NOFC", "foreclosure"),
-    ("TAXDEED", "tax sale"),
-    ("TAXDEED", "tax deed"),
     ("PRO", "estate"),
-    ("PRO", "probate"),
-    ("JUD", "judgment"),
-    ("LN", "lien"),
-    ("LNHOA", "homeowners association lien"),
-    ("LNMECH", "mechanic lien"),
 ]
 
 CATEGORY_LABELS: Dict[str, str] = {
@@ -277,7 +273,7 @@ def extract_money(text: str) -> str:
 
 def extract_first_match(patterns: Sequence[str], text: str) -> str:
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.I)
+        match = re.search(pattern, text, flags=re.I | re.S)
         if match:
             return clean_text(match.group(1))
     return ""
@@ -478,43 +474,6 @@ def build_parcel_index() -> Dict[str, Dict[str, str]]:
     return parcel_index
 
 
-async def maybe_visible(locator: Locator) -> bool:
-    try:
-        return await locator.is_visible()
-    except Exception:
-        return False
-
-
-async def try_fill_by_label(page: Page, labels: Sequence[str], value: str) -> bool:
-    for label in labels:
-        try:
-            locator = page.get_by_label(re.compile(label, re.I))
-            if await locator.count() > 0:
-                await locator.first.fill(value)
-                return True
-        except Exception:
-            continue
-    return False
-
-
-async def try_select_by_label(page: Page, labels: Sequence[str], option_text: str) -> bool:
-    for label in labels:
-        try:
-            locator = page.get_by_label(re.compile(label, re.I))
-            if await locator.count() > 0:
-                select = locator.first
-                options = await select.locator("option").all()
-                for option in options:
-                    text = clean_text(await option.text_content())
-                    val = clean_text(await option.get_attribute("value"))
-                    if option_text.upper() == text.upper() or option_text.upper() in text.upper():
-                        await select.select_option(value=val)
-                        return True
-        except Exception:
-            continue
-    return False
-
-
 async def click_first_matching(page: Page, texts: Sequence[str]) -> bool:
     for text in texts:
         try:
@@ -534,6 +493,26 @@ async def click_first_matching(page: Page, texts: Sequence[str]) -> bool:
     return False
 
 
+async def fill_first_text_input(page: Page, value: str) -> bool:
+    selectors = [
+        "input[type='search']",
+        "input[name*='search' i]",
+        "input[id*='search' i]",
+        "input[type='text']",
+        "input:not([type])",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+            if count > 0:
+                await locator.first.fill(value)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def classify_notice(text: str, fallback_cat: str) -> Tuple[str, str]:
     blob = text.upper()
 
@@ -547,7 +526,7 @@ def classify_notice(text: str, fallback_cat: str) -> Tuple[str, str]:
         return "LNMECH", CATEGORY_LABELS["LNMECH"]
     if "HOMEOWNERS ASSOCIATION" in blob or "HOA" in blob:
         return "LNHOA", CATEGORY_LABELS["LNHOA"]
-    if "PROBATE" in blob or "ESTATE" in blob or "ADMINISTRATOR" in blob or "EXECUTOR" in blob:
+    if "PROBATE" in blob or "ESTATE" in blob or "DECEASED" in blob or "EXECUTOR" in blob or "ADMINISTRATOR" in blob:
         return "PRO", CATEGORY_LABELS["PRO"]
     if "JUDGMENT" in blob:
         return "JUD", CATEGORY_LABELS["JUD"]
@@ -563,23 +542,24 @@ def parse_notice_text_to_record(text: str, url: str, fallback_cat: str) -> RawRe
 
     owner = extract_first_match(
         [
-            r"(?:grantor|owner|defendant|estate of|decedent)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
-            r"(?:against|re:|regarding)\s+([A-Z][A-Z0-9 ,.'&\-]{4,})",
+            r"(?:grantor|owner|defendant|decedent|estate of)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
+            r"(?:estate of)\s+([A-Z][A-Z0-9 ,.'&\-]{4,})",
+            r"(?:against)\s+([A-Z][A-Z0-9 ,.'&\-]{4,})",
         ],
         full_text,
     )
 
     grantee = extract_first_match(
         [
-            r"(?:grantee|plaintiff|claimant|secured creditor|creditor)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
+            r"(?:grantee|plaintiff|claimant|creditor|secured creditor)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
         ],
         full_text,
     )
 
     legal = extract_first_match(
         [
-            r"(?:property address|premises known as)\s*[:\-]?\s*([0-9A-Z ,.#'\-]+GA \d{5})",
-            r"(?:legal description)\s*[:\-]\s*(.+?)(?:amount|book|page|$)",
+            r"(?:property address|premises known as)\s*[:\-]?\s*([0-9A-Z ,.#'\-]+(?:GA|Georgia)\s+\d{5})",
+            r"(?:address)\s*[:\-]\s*([0-9A-Z ,.#'\-]{10,})",
         ],
         full_text,
     )
@@ -595,7 +575,7 @@ def parse_notice_text_to_record(text: str, url: str, fallback_cat: str) -> RawRe
     doc_num = extract_first_match(
         [
             r"(?:document no\.?|doc(?:ument)? no\.?|instrument no\.?|case no\.?|civil action no\.?)\s*[:\-]?\s*([A-Z0-9\-]+)",
-            r"(?:book\s*\d+\s*page\s*\d+)",
+            r"(book\s*\d+\s*page\s*\d+)",
         ],
         full_text,
     )
@@ -603,15 +583,12 @@ def parse_notice_text_to_record(text: str, url: str, fallback_cat: str) -> RawRe
     amount = extract_money(full_text)
 
     if not owner:
-        # Best-effort uppercase person/org chunks
-        candidates = re.findall(r"\b[A-Z][A-Z ,.'&\-]{5,}\b", full_text)
-        owner = clean_text(candidates[0]) if candidates else ""
-
-    doc_type = CATEGORY_LABELS.get(cat, cat_label)
+        people_like = re.findall(r"\b[A-Z][A-Z ,.'&\-]{5,}\b", full_text)
+        owner = clean_text(people_like[0]) if people_like else ""
 
     return RawRecord(
         doc_num=doc_num,
-        doc_type=doc_type,
+        doc_type=CATEGORY_LABELS.get(cat, cat_label),
         filed=filed,
         cat=cat,
         cat_label=cat_label,
@@ -624,97 +601,127 @@ def parse_notice_text_to_record(text: str, url: str, fallback_cat: str) -> RawRe
     )
 
 
-async def scrape_public_notice_search(page: Page, category_code: str, search_term: str, from_date: str, to_date: str) -> List[RawRecord]:
+async def scrape_notice_detail_text(context: BrowserContext, detail_url: str) -> str:
+    detail_page = await context.new_page()
+    try:
+        await detail_page.goto(detail_url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
+        try:
+            await detail_page.wait_for_load_state("networkidle", timeout=3000)
+        except Exception:
+            pass
+        html = await detail_page.content()
+        soup = BeautifulSoup(html, "lxml")
+        return clean_text(soup.get_text(" ", strip=True))
+    finally:
+        await detail_page.close()
+
+
+def collect_candidate_links_from_html(html: str, base_url: str) -> List[str]:
+    soup = BeautifulSoup(html, "lxml")
+    links: List[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href = clean_text(a.get("href"))
+        text = clean_text(a.get_text(" ", strip=True))
+        full = urljoin(base_url, href)
+        blob = f"{href} {text}".upper()
+
+        if (
+            "DETAIL" in blob
+            or "NOTICE" in blob
+            or "PUBLICNOTICE" in blob
+            or "VIEW" in blob
+        ):
+            links.append(full)
+
+    deduped: List[str] = []
+    seen = set()
+    for link in links:
+        if link in seen:
+            continue
+        seen.add(link)
+        deduped.append(link)
+
+    return deduped[:MAX_DETAIL_LINKS_PER_SEARCH]
+
+
+async def scrape_public_notice_search(
+    page: Page,
+    context: BrowserContext,
+    category_code: str,
+    search_term: str,
+    from_date: str,
+    to_date: str,
+    remaining_detail_budget: int,
+) -> Tuple[List[RawRecord], int]:
     records: List[RawRecord] = []
 
-    logger.info("Georgia Public Notice search: %s | term=%s", category_code, search_term)
+    logger.info("Searching public notice term=%s cat=%s", search_term, category_code)
 
     await page.goto(PUBLIC_NOTICE_URL, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
-    await page.wait_for_timeout(1200)
+    await page.wait_for_timeout(1000)
 
-    await try_fill_by_label(page, ["Search"], search_term)
-    await try_select_by_label(page, ["County"], TARGET_COUNTY)
+    filled = await fill_first_text_input(page, search_term)
+    if not filled:
+        logger.warning("Could not locate search input for term=%s", search_term)
+        return records, remaining_detail_budget
 
-    # Best-effort date handling
-    await try_fill_by_label(page, ["From"], from_date)
-    await try_fill_by_label(page, ["To"], to_date)
-
-    clicked = await click_first_matching(page, ["Search", "Advanced Search"])
+    clicked = await click_first_matching(page, ["Search"])
     if not clicked:
-        raise RuntimeError("Could not submit Georgia Public Notice search")
+        logger.warning("Could not click search for term=%s", search_term)
+        return records, remaining_detail_budget
 
     try:
         await page.wait_for_load_state("networkidle", timeout=PER_SEARCH_TIMEOUT_MS)
     except PlaywrightTimeoutError:
-        logger.warning("Public notice search timed out after submit for term=%s", search_term)
+        logger.warning("Timed out waiting for search results for term=%s", search_term)
 
     await page.wait_for_timeout(PAGE_WAIT_MS)
 
     current_page = 1
     while True:
         html = await page.content()
-        soup = BeautifulSoup(html, "lxml")
+        candidate_links = collect_candidate_links_from_html(html, page.url)
 
-        # Detail links often include "Public Notice Detail" breadcrumb or result anchors.
-        candidate_links = []
-        for a in soup.find_all("a", href=True):
-            href = clean_text(a.get("href"))
-            text = clean_text(a.get_text(" ", strip=True))
-            href_upper = href.upper()
-            text_upper = text.upper()
-            if "DETAIL" in href_upper or "DETAIL" in text_upper or "NOTICE" in text_upper:
-                full = urljoin(page.url, href)
-                candidate_links.append((full, text))
+        if not candidate_links:
+            logger.info("No candidate links found for term=%s page=%s", search_term, current_page)
 
-        seen_links = set()
-        for detail_url, link_text in candidate_links:
-            if detail_url in seen_links:
-                continue
-            seen_links.add(detail_url)
+        for detail_url in candidate_links:
+            if remaining_detail_budget <= 0:
+                logger.warning("Detail page budget exhausted")
+                return records, remaining_detail_budget
+
+            remaining_detail_budget -= 1
 
             try:
-                detail_page = await page.context.new_page()
-                await detail_page.goto(detail_url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
-                try:
-                    await detail_page.wait_for_load_state("networkidle", timeout=7000)
-                except Exception:
-                    pass
-                detail_html = await detail_page.content()
-                detail_soup = BeautifulSoup(detail_html, "lxml")
-                detail_text = clean_text(detail_soup.get_text(" ", strip=True))
-                await detail_page.close()
-
+                detail_text = await scrape_notice_detail_text(context, detail_url)
                 if TARGET_COUNTY.upper() not in detail_text.upper() and "GWINNETT" not in detail_text.upper():
                     continue
 
                 record = parse_notice_text_to_record(detail_text, detail_url, category_code)
 
-                # keep only recent-ish records if a date was parsed and it's outside window
-                filed_dt = parse_date_text(record.filed)
                 from_dt = parse_date_text(from_date)
                 to_dt = parse_date_text(to_date)
-                if filed_dt and from_dt and to_dt:
-                    if not (from_dt <= filed_dt <= to_dt):
-                        continue
+                filed_dt = parse_date_text(record.filed)
+
+                if filed_dt and from_dt and to_dt and not (from_dt <= filed_dt <= to_dt):
+                    continue
 
                 records.append(record)
             except Exception as exc:
-                logger.warning("Skipping bad public notice detail %s: %s", detail_url, exc)
+                logger.warning("Skipping detail page %s: %s", detail_url, exc)
 
-        logger.info("Public notice term=%s page=%s -> cumulative %s rows", search_term, current_page, len(records))
+        logger.info(
+            "term=%s page=%s yielded cumulative %s records",
+            search_term,
+            current_page,
+            len(records),
+        )
 
         if current_page >= MAX_RESULTS_PAGES:
             break
 
-        moved = False
-        try:
-            nxt = page.get_by_role("link", name=re.compile(r"next", re.I))
-            if await nxt.count() > 0:
-                await nxt.first.click()
-                moved = True
-        except Exception:
-            moved = False
-
+        moved = await click_first_matching(page, ["Next"])
         if not moved:
             break
 
@@ -725,12 +732,13 @@ async def scrape_public_notice_search(page: Page, category_code: str, search_ter
         await page.wait_for_timeout(PAGE_WAIT_MS)
         current_page += 1
 
-    return records
+    return records, remaining_detail_budget
 
 
 async def scrape_public_notices(from_date: str, to_date: str) -> List[RawRecord]:
     all_records: List[RawRecord] = []
     seen = set()
+    remaining_detail_budget = MAX_DETAIL_PAGES_TOTAL
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
@@ -739,7 +747,16 @@ async def scrape_public_notices(from_date: str, to_date: str) -> List[RawRecord]
 
         for cat_code, term in SEARCH_TERMS:
             try:
-                rows = await scrape_public_notice_search(page, cat_code, term, from_date, to_date)
+                rows, remaining_detail_budget = await scrape_public_notice_search(
+                    page=page,
+                    context=context,
+                    category_code=cat_code,
+                    search_term=term,
+                    from_date=from_date,
+                    to_date=to_date,
+                    remaining_detail_budget=remaining_detail_budget,
+                )
+
                 for row in rows:
                     key = (
                         clean_text(row.doc_num),
@@ -752,13 +769,17 @@ async def scrape_public_notices(from_date: str, to_date: str) -> List[RawRecord]
                         continue
                     seen.add(key)
                     all_records.append(row)
+
+                if remaining_detail_budget <= 0:
+                    logger.warning("Stopping early due to detail page budget limit")
+                    break
             except Exception as exc:
-                logger.warning("Public notice search failed for %s / %s: %s", cat_code, term, exc)
+                logger.warning("Search failed for %s / %s: %s", cat_code, term, exc)
 
         await context.close()
         await browser.close()
 
-    logger.info("Scraped %s raw notice records before enrichment/dedupe", len(all_records))
+    logger.info("Scraped %s raw records before enrichment/dedupe", len(all_records))
     return all_records
 
 
@@ -781,7 +802,7 @@ def flags_for_record(record: LeadRecord, lookback_cutoff: date) -> List[str]:
         flags.append("Pre-foreclosure")
     if cat in {"JUD", "CCJ", "DRJUD"}:
         flags.append("Judgment lien")
-    if cat in {"LNCORPTX", "LNIRS", "LNFED"} or "TAX" in blob:
+    if "TAX" in blob:
         flags.append("Tax lien")
     if cat == "LNMECH":
         flags.append("Mechanic lien")
@@ -817,7 +838,11 @@ def score_record(record: LeadRecord) -> int:
     return min(score, 100)
 
 
-def enrich_records(raw_records: List[RawRecord], parcel_index: Dict[str, Dict[str, str]], lookback_cutoff: date) -> List[LeadRecord]:
+def enrich_records(
+    raw_records: List[RawRecord],
+    parcel_index: Dict[str, Dict[str, str]],
+    lookback_cutoff: date,
+) -> List[LeadRecord]:
     enriched: List[LeadRecord] = []
     for raw in raw_records:
         try:
@@ -838,6 +863,7 @@ def enrich_records(raw_records: List[RawRecord], parcel_index: Dict[str, Dict[st
             enriched.append(lead)
         except Exception as exc:
             logger.warning("Skipping bad enriched row: %s", exc)
+
     return dedupe_records(enriched)
 
 
@@ -952,11 +978,14 @@ async def async_main() -> int:
 
     logger.info("============================================================")
     logger.info("Gwinnett Motivated Seller Scraper")
-    logger.info("Notice source   : %s", PUBLIC_NOTICE_URL)
-    logger.info("Parcel bulk url : %s", PROPERTY_APPRAISER_BULK_DATA_URL or "<not provided>")
-    logger.info("County          : %s", TARGET_COUNTY)
-    logger.info("Range           : %s -> %s (%s days)", from_date, to_date, LOOKBACK_DAYS)
-    logger.info("Search terms    : %s", ", ".join(f"{cat}:{term}" for cat, term in SEARCH_TERMS))
+    logger.info("Notice source      : %s", PUBLIC_NOTICE_URL)
+    logger.info("Parcel bulk url    : %s", PROPERTY_APPRAISER_BULK_DATA_URL or "<not provided>")
+    logger.info("County             : %s", TARGET_COUNTY)
+    logger.info("Range              : %s -> %s (%s days)", from_date, to_date, LOOKBACK_DAYS)
+    logger.info("Search terms       : %s", ", ".join(f"{cat}:{term}" for cat, term in SEARCH_TERMS))
+    logger.info("Max result pages   : %s", MAX_RESULTS_PAGES)
+    logger.info("Max detail/search  : %s", MAX_DETAIL_LINKS_PER_SEARCH)
+    logger.info("Max detail total   : %s", MAX_DETAIL_PAGES_TOTAL)
     logger.info("============================================================")
 
     parcel_index: Dict[str, Dict[str, str]] = {}
