@@ -56,7 +56,7 @@ DEFAULT_PROPERTY_BULK_URL = (
 
 PROPERTY_APPRAISER_BULK_DATA_URL = os.getenv(
     "PROPERTY_APPRAISER_BULK_DATA_URL",
-    DEFAULT_PROPERTY_BULK_URL,
+    "https://gwinnettcountyga.gov/static/departments/gis-data/downloads/Parcel.zip",
 ).strip()
 
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
