@@ -38,7 +38,7 @@ jobs:
       - name: Run scraper
         env:
           CLERK_PORTAL_URL: https://www.gwinnettcourts.com/deeds-and-land-records/
-          PROPERTY_APPRAISER_BULK_DATA_URL: ${{ secrets.PROPERTY_APPRAISER_BULK_DATA_URL }}
+          PROPERTY_APPRAISER_BULK_DATA_URL: ${{ secrets.https://gwinnettcountyga.gov/static/departments/gis-data/downloads/Parcel.zip }}
           LOOKBACK_DAYS: "7"
           HEADLESS: "true"
         run: python scraper/fetch.py
