@@ -21,7 +21,6 @@ from xml.etree import ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
-from dbfread import DBF
 from playwright.async_api import BrowserContext, Locator, Page, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
@@ -33,19 +32,14 @@ DASHBOARD_DIR = BASE_DIR / "dashboard"
 TMP_DIR = BASE_DIR / ".tmp"
 LOG_DIR = BASE_DIR / ".logs"
 
-CLERK_PORTAL_URL = os.getenv(
-    "CLERK_PORTAL_URL",
-    "https://www.gwinnettcourts.com/deeds-and-land-records/",
-)
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+HEADLESS = os.getenv("HEADLESS", "true").lower() != "false"
 
-GSCCCA_REAL_ESTATE_URL = os.getenv(
-    "GSCCCA_REAL_ESTATE_URL",
-    "https://search.gsccca.org/RealEstate/namesearch.asp",
-)
-
-GSCCCA_LIEN_URL = os.getenv(
-    "GSCCCA_LIEN_URL",
-    "https://search.gsccca.org/Lien/namesearch.asp",
+PUBLIC_NOTICE_URL = os.getenv(
+    "PUBLIC_NOTICE_URL",
+    "https://www.georgiapublicnotice.com/search.aspx",
 )
 
 PROPERTY_APPRAISER_BULK_DATA_URL = os.getenv(
@@ -53,64 +47,48 @@ PROPERTY_APPRAISER_BULK_DATA_URL = os.getenv(
     "https://gwinnettcountyga.gov/static/departments/gis-data/downloads/Parcel.zip",
 ).strip()
 
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-HEADLESS = os.getenv("HEADLESS", "true").lower() != "false"
-
-# Keep this intentionally narrow until the first working run is confirmed.
-# Expand later after you see data.
-PREFIXES_ENV = os.getenv("GSCCCA_PREFIXES", "A").strip()
-CATEGORY_CODES_ENV = os.getenv("CATEGORY_CODES", "LP,PRO").strip()
-
-PER_SEARCH_TIMEOUT_MS = int(os.getenv("PER_SEARCH_TIMEOUT_MS", "5000"))
-PAGE_WAIT_MS = int(os.getenv("PAGE_WAIT_MS", "800"))
-MAX_PAGES_PER_PREFIX = int(os.getenv("MAX_PAGES_PER_PREFIX", "2"))
+TARGET_COUNTY = os.getenv("TARGET_COUNTY", "Gwinnett").strip()
+MAX_RESULTS_PAGES = int(os.getenv("MAX_RESULTS_PAGES", "5"))
+PAGE_WAIT_MS = int(os.getenv("PAGE_WAIT_MS", "1200"))
+PER_SEARCH_TIMEOUT_MS = int(os.getenv("PER_SEARCH_TIMEOUT_MS", "12000"))
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-
-@dataclass(frozen=True)
-class CategoryConfig:
-    cat: str
-    cat_label: str
-    source_kind: str
-    instrument_label: str
-    post_filter_terms: Tuple[str, ...] = ()
-    negative_filter_terms: Tuple[str, ...] = ()
-
-
-ALL_CATEGORY_CONFIGS: List[CategoryConfig] = [
-    CategoryConfig("LP", "Lis Pendens", "lien", "Lis Pendens"),
-    CategoryConfig("NOFC", "Notice of Foreclosure", "realestate", "DEED - FORECLOSURE"),
-    CategoryConfig("TAXDEED", "Tax Deed", "realestate", "TAX SALE DEED"),
-    CategoryConfig("JUD", "Judgment", "lien", "FIFA"),
-    CategoryConfig("CCJ", "Certified Judgment", "lien", "ORDER"),
-    CategoryConfig("DRJUD", "Domestic Judgment", "lien", "ORDER"),
-    CategoryConfig("LNCORPTX", "Corporate Tax Lien", "lien", "Lien", ("TAX", "DEPARTMENT OF REVENUE", "STATE OF GEORGIA")),
-    CategoryConfig("LNIRS", "IRS Lien", "lien", "Federal Tax Lien", ("IRS", "INTERNAL REVENUE", "UNITED STATES")),
-    CategoryConfig("LNFED", "Federal Lien", "lien", "Federal Tax Lien", ("UNITED STATES", "FEDERAL")),
-    CategoryConfig("LN", "Lien", "lien", "Lien"),
-    CategoryConfig("LNMECH", "Mechanic Lien", "lien", "Mechanics and Materialmens Lien"),
-    CategoryConfig("LNHOA", "HOA Lien", "lien", "Lien", ("HOMEOWNERS", "HOMEOWNER", "ASSOCIATION", "HOA", "CONDOMINIUM")),
-    CategoryConfig("MEDLN", "Medicaid Lien", "lien", "Lien", ("MEDICAID", "DEPARTMENT OF COMMUNITY HEALTH", "DCH")),
-    CategoryConfig("PRO", "Probate / Estate", "realestate", "ESTATE DOCUMENTATION"),
-    CategoryConfig("NOC", "Notice of Commencement", "lien", "Notice"),
-    CategoryConfig("RELLP", "Release Lis Pendens", "lien", "Release", ("LIS PENDENS",)),
+# Searches that are actually likely to return motivated-seller signals from public notices.
+SEARCH_TERMS: List[Tuple[str, str]] = [
+    ("LP", "lis pendens"),
+    ("NOFC", "foreclosure"),
+    ("TAXDEED", "tax sale"),
+    ("TAXDEED", "tax deed"),
+    ("PRO", "estate"),
+    ("PRO", "probate"),
+    ("JUD", "judgment"),
+    ("LN", "lien"),
+    ("LNHOA", "homeowners association lien"),
+    ("LNMECH", "mechanic lien"),
 ]
 
-CATEGORY_CONFIGS = [
-    c for c in ALL_CATEGORY_CONFIGS
-    if c.cat in {x.strip().upper() for x in CATEGORY_CODES_ENV.split(",") if x.strip()}
-] or [
-    next(c for c in ALL_CATEGORY_CONFIGS if c.cat == "LP"),
-    next(c for c in ALL_CATEGORY_CONFIGS if c.cat == "PRO"),
-]
-
-GSCCCA_PREFIXES = [c for c in PREFIXES_ENV if c.strip()] or ["A"]
+CATEGORY_LABELS: Dict[str, str] = {
+    "LP": "Lis Pendens",
+    "NOFC": "Notice of Foreclosure",
+    "TAXDEED": "Tax Deed",
+    "JUD": "Judgment",
+    "CCJ": "Certified Judgment",
+    "DRJUD": "Domestic Judgment",
+    "LNCORPTX": "Corporate Tax Lien",
+    "LNIRS": "IRS Lien",
+    "LNFED": "Federal Lien",
+    "LN": "Lien",
+    "LNMECH": "Mechanic Lien",
+    "LNHOA": "HOA Lien",
+    "MEDLN": "Medicaid Lien",
+    "PRO": "Probate / Estate",
+    "NOC": "Notice of Commencement",
+    "RELLP": "Release Lis Pendens",
+}
 
 FLAG_POINTS = {
     "Lis pendens": 10,
@@ -136,6 +114,7 @@ class RawRecord:
     amount: str = ""
     legal: str = ""
     clerk_url: str = ""
+    notice_text: str = ""
 
 
 @dataclass
@@ -202,28 +181,7 @@ def retryable(fn):
                     exc,
                 )
                 if attempt < MAX_RETRIES:
-                    time.sleep(min(2 * attempt, 6))
-        raise last_exc
-    return wrapper
-
-
-def retryable_async(fn):
-    async def wrapper(*args, **kwargs):
-        last_exc = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                return await fn(*args, **kwargs)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    "Attempt %s/%s failed for %s: %s",
-                    attempt,
-                    MAX_RETRIES,
-                    fn.__name__,
-                    exc,
-                )
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(min(2 * attempt, 6))
+                    time.sleep(min(attempt * 2, 6))
         raise last_exc
     return wrapper
 
@@ -276,7 +234,10 @@ def split_owner_name(owner: str) -> Tuple[str, str]:
     if not owner_clean:
         return "", ""
     normalized = normalize_name(owner_clean)
-    if any(marker in normalized for marker in ["LLC", "INC", "CORP", "CORPORATION", "TRUST", "ESTATE", "LP", "LLP", "LTD", "BANK"]):
+    if any(
+        marker in normalized
+        for marker in ["LLC", "INC", "CORP", "CORPORATION", "TRUST", "ESTATE", "LP", "LLP", "LTD", "BANK"]
+    ):
         return "", owner_clean
     if "," in owner_clean:
         last, _, rest = owner_clean.partition(",")
@@ -314,13 +275,11 @@ def extract_money(text: str) -> str:
     return match.group(0) if match else ""
 
 
-def extract_best(headers: Sequence[str], row: Dict[str, str], candidates: Sequence[str]) -> str:
-    header_map = {normalize_name(h): h for h in headers}
-    for candidate in candidates:
-        candidate_key = normalize_name(candidate)
-        for header_norm, original_header in header_map.items():
-            if candidate_key == header_norm or candidate_key in header_norm:
-                return clean_text(row.get(original_header, ""))
+def extract_first_match(patterns: Sequence[str], text: str) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return clean_text(match.group(1))
     return ""
 
 
@@ -359,96 +318,12 @@ def http_get(url: str, session: Optional[requests.Session] = None, **kwargs) -> 
         return response
 
 
-@retryable
-def http_post(url: str, session: requests.Session, data: Dict[str, Any], **kwargs) -> requests.Response:
-    headers = kwargs.pop("headers", {})
-    headers.setdefault("User-Agent", USER_AGENT)
-
-    try:
-        response = session.post(url, timeout=REQUEST_TIMEOUT, headers=headers, data=data, **kwargs)
-        response.raise_for_status()
-        return response
-    except requests.exceptions.SSLError:
-        logger.warning("SSL verification failed for POST %s. Retrying without certificate verification.", url)
-        response = session.post(
-            url,
-            timeout=REQUEST_TIMEOUT,
-            headers=headers,
-            data=data,
-            verify=False,
-            **kwargs,
-        )
-        response.raise_for_status()
-        return response
-
-
-@retryable
-def download_property_bulk_data(url: str) -> Optional[bytes]:
-    if not url:
-        logger.warning("PROPERTY_APPRAISER_BULK_DATA_URL is blank. Parcel enrichment skipped.")
-        return None
-
-    session = requests.Session()
-    response = http_get(url, session=session, allow_redirects=True)
-    content_type = clean_text(response.headers.get("content-type", "")).lower()
-
-    if any(token in content_type for token in ("application/zip", "application/octet-stream", "zip")):
-        return response.content
-
-    if response.url.lower().endswith((".zip", ".dbf", ".xlsx")):
-        return response.content
-
-    soup = BeautifulSoup(response.text, "lxml")
-
-    for anchor in soup.find_all("a", href=True):
-        href = clean_text(anchor["href"])
-        if any(href.lower().endswith(ext) for ext in (".zip", ".dbf", ".xlsx")):
-            return http_get(
-                urljoin(response.url, href),
-                session=session,
-                allow_redirects=True,
-            ).content
-
-    postback_anchor = soup.find("a", href=re.compile(r"__doPostBack\(", re.I))
-    if postback_anchor:
-        href = postback_anchor.get("href", "")
-        match = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", href)
-        if match:
-            event_target, event_argument = match.groups()
-            form = postback_anchor.find_parent("form") or soup.find("form")
-            if form:
-                payload = {}
-                for inp in form.find_all(["input", "select", "textarea"]):
-                    name = inp.get("name")
-                    if name:
-                        payload[name] = inp.get("value", "")
-                payload["__EVENTTARGET"] = event_target
-                payload["__EVENTARGUMENT"] = event_argument
-                return http_post(
-                    urljoin(response.url, form.get("action") or response.url),
-                    session=session,
-                    data=payload,
-                    allow_redirects=True,
-                ).content
-
-    logger.warning("Could not detect parcel bulk download")
-    return None
-
-
 def iter_zip_members(blob: bytes) -> List[Tuple[str, bytes]]:
     try:
         with zipfile.ZipFile(BytesIO(blob)) as zf:
             return [(info.filename, zf.read(info.filename)) for info in zf.infolist() if not info.is_dir()]
     except zipfile.BadZipFile:
         return [("download.bin", blob)]
-
-
-def read_dbf_rows(dbf_bytes: bytes, filename: str) -> Iterator[Dict[str, Any]]:
-    path = TMP_DIR / Path(filename).name
-    path.write_bytes(dbf_bytes)
-    dbf = DBF(str(path), load=True, ignore_missing_memofile=True, char_decode_errors="ignore")
-    for row in dbf:
-        yield dict(row)
 
 
 def col_letters_to_index(col_ref: str) -> int:
@@ -551,6 +426,14 @@ def build_row_lookup(row: Dict[str, Any], aliases: Sequence[str]) -> str:
     return ""
 
 
+def download_property_bulk_data(url: str) -> Optional[bytes]:
+    if not url:
+        logger.warning("PROPERTY_APPRAISER_BULK_DATA_URL is blank. Parcel enrichment skipped.")
+        return None
+    response = http_get(url, allow_redirects=True)
+    return response.content
+
+
 def build_parcel_index() -> Dict[str, Dict[str, str]]:
     parcel_index: Dict[str, Dict[str, str]] = {}
     blob = download_property_bulk_data(PROPERTY_APPRAISER_BULK_DATA_URL)
@@ -558,25 +441,14 @@ def build_parcel_index() -> Dict[str, Dict[str, str]]:
         return parcel_index
 
     members = iter_zip_members(blob)
-    row_iterators: List[Iterator[Dict[str, Any]]] = []
+    found_xlsx = False
 
     for name, data in members:
-        lower = name.lower()
-        if lower.endswith(".dbf"):
-            logger.info("Using parcel DBF: %s", name)
-            row_iterators.append(read_dbf_rows(data, name))
-        elif lower.endswith(".xlsx"):
-            logger.info("Using parcel XLSX: %s", name)
-            row_iterators.append(read_xlsx_rows(data))
-
-    if not row_iterators:
-        logger.warning("No DBF or XLSX found in parcel download")
-        return parcel_index
-
-    processed = 0
-    for row_iter in row_iterators:
-        for row in row_iter:
-            processed += 1
+        if not name.lower().endswith(".xlsx"):
+            continue
+        found_xlsx = True
+        logger.info("Using parcel XLSX: %s", name)
+        for row in read_xlsx_rows(data):
             try:
                 owner = build_row_lookup(row, ["OWNER", "OWN1", "OWNER_NAME", "OWNNAME"])
                 if not owner:
@@ -599,7 +471,10 @@ def build_parcel_index() -> Dict[str, Dict[str, str]]:
             except Exception as exc:
                 logger.warning("Skipping bad parcel row: %s", exc)
 
-    logger.info("Parcel rows processed: %s | indexed owner keys: %s", processed, len(parcel_index))
+    if not found_xlsx:
+        logger.warning("No XLSX files found in parcel download")
+
+    logger.info("Indexed parcel owner keys: %s", len(parcel_index))
     return parcel_index
 
 
@@ -610,283 +485,280 @@ async def maybe_visible(locator: Locator) -> bool:
         return False
 
 
-async def find_first_matching_input(page: Page, patterns: Sequence[str]) -> Optional[Locator]:
-    patterns = [p.lower() for p in patterns]
-    for inp in await page.locator("input").all():
+async def try_fill_by_label(page: Page, labels: Sequence[str], value: str) -> bool:
+    for label in labels:
         try:
-            attrs = " ".join(
-                clean_text(v)
-                for v in [
-                    await inp.get_attribute("name"),
-                    await inp.get_attribute("id"),
-                    await inp.get_attribute("placeholder"),
-                    await inp.get_attribute("aria-label"),
-                    await inp.get_attribute("title"),
-                ]
-                if v
-            ).lower()
-            input_type = clean_text(await inp.get_attribute("type")).lower()
-            if input_type in {"hidden", "submit", "button", "image", "checkbox", "radio"}:
-                continue
-            if any(p in attrs for p in patterns):
-                return inp
-        except Exception:
-            continue
-    return None
-
-
-async def safe_select_option_by_text(select_locator: Locator, option_text: str) -> bool:
-    try:
-        options = await select_locator.locator("option").all()
-        for option in options:
-            text = clean_text(await option.text_content())
-            value = clean_text(await option.get_attribute("value"))
-            if text.upper() == option_text.upper() or option_text.upper() in text.upper():
-                await select_locator.select_option(value=value)
-                return True
-    except Exception:
-        return False
-    return False
-
-
-async def find_select_with_option(page: Page, option_text: str) -> Optional[Locator]:
-    for select in await page.locator("select").all():
-        if await safe_select_option_by_text(select, option_text):
-            return select
-    return None
-
-
-async def set_date_range_fields(page: Page, from_date: str, to_date: str) -> None:
-    from_input = await find_first_matching_input(page, ["fromdate", "from date", "begin", "start date"])
-    to_input = await find_first_matching_input(page, ["todate", "to date", "end date", "through date"])
-
-    if from_input and to_input:
-        await from_input.fill(from_date)
-        await to_input.fill(to_date)
-
-
-async def set_name_prefix(page: Page, prefix: str) -> None:
-    last_name_input = await find_first_matching_input(page, ["lastname", "last name", "grantor", "debtor", "party"])
-    first_name_input = await find_first_matching_input(page, ["firstname", "first name"])
-
-    if last_name_input is None:
-        text_inputs = await page.locator("input[type='text'], input:not([type])").all()
-        visible_text_inputs = [inp for inp in text_inputs if await maybe_visible(inp)]
-        if visible_text_inputs:
-            last_name_input = visible_text_inputs[0]
-        if len(visible_text_inputs) >= 2 and first_name_input is None:
-            first_name_input = visible_text_inputs[1]
-
-    if last_name_input is None:
-        raise RuntimeError("Could not locate name input")
-
-    await last_name_input.fill(prefix)
-    if first_name_input is not None:
-        await first_name_input.fill("")
-
-
-async def click_search(page: Page) -> None:
-    candidates = [
-        page.get_by_role("button", name=re.compile("search", re.I)),
-        page.get_by_role("link", name=re.compile("search", re.I)),
-        page.locator("input[type='submit']"),
-        page.locator("button[type='submit']"),
-    ]
-    for locator in candidates:
-        try:
+            locator = page.get_by_label(re.compile(label, re.I))
             if await locator.count() > 0:
-                await locator.first.click()
-                return
-        except Exception:
-            continue
-    raise RuntimeError("Could not locate submit control")
-
-
-async def next_page(page: Page) -> bool:
-    locators = [
-        page.get_by_role("link", name=re.compile(r"^next$", re.I)),
-        page.get_by_text(re.compile(r"^next$", re.I)),
-        page.locator("a", has_text="Next"),
-    ]
-    for locator in locators:
-        try:
-            if await locator.count() == 0:
-                continue
-            await locator.first.click(timeout=2000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=PER_SEARCH_TIMEOUT_MS)
-            except Exception:
-                pass
-            await page.wait_for_timeout(PAGE_WAIT_MS)
-            return True
+                await locator.first.fill(value)
+                return True
         except Exception:
             continue
     return False
 
 
-def parse_result_tables(html: str, base_url: str, category: CategoryConfig) -> List[RawRecord]:
-    soup = BeautifulSoup(html, "lxml")
-    parsed: List[RawRecord] = []
-
-    for table in soup.find_all("table"):
-        rows = table.find_all("tr")
-        if len(rows) < 2:
+async def try_select_by_label(page: Page, labels: Sequence[str], option_text: str) -> bool:
+    for label in labels:
+        try:
+            locator = page.get_by_label(re.compile(label, re.I))
+            if await locator.count() > 0:
+                select = locator.first
+                options = await select.locator("option").all()
+                for option in options:
+                    text = clean_text(await option.text_content())
+                    val = clean_text(await option.get_attribute("value"))
+                    if option_text.upper() == text.upper() or option_text.upper() in text.upper():
+                        await select.select_option(value=val)
+                        return True
+        except Exception:
             continue
-
-        headers = [clean_text(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])]
-        if not headers:
-            continue
-
-        header_blob = " | ".join(headers).lower()
-        if not any(token in header_blob for token in ["grantor", "grantee", "party", "instrument", "filed", "record", "book", "page"]):
-            continue
-
-        for row in rows[1:]:
-            try:
-                cells = row.find_all(["td", "th"])
-                if len(cells) < 2:
-                    continue
-                values = [clean_text(cell.get_text(" ", strip=True)) for cell in cells]
-                row_map = {headers[idx] if idx < len(headers) else f"col_{idx}": values[idx] for idx in range(len(values))}
-                row_text = " | ".join(values)
-                link = row.find("a", href=True)
-
-                record = RawRecord(
-                    doc_num=extract_best(headers, row_map, ["Document Number", "Doc No", "Book/Page", "Book Page", "Reception", "Instrument"]),
-                    doc_type=extract_best(headers, row_map, ["Instrument", "Document Type", "Type"]) or category.instrument_label,
-                    filed=extract_best(headers, row_map, ["Filed", "Date Filed", "Filed Date", "Recording Date"]),
-                    cat=category.cat,
-                    cat_label=category.cat_label,
-                    owner=extract_best(headers, row_map, ["Grantor", "Debtor", "Direct Party", "Owner", "Party 1"]),
-                    grantee=extract_best(headers, row_map, ["Grantee", "Claimant", "Reverse Party", "Party 2"]),
-                    amount=extract_best(headers, row_map, ["Amount", "Debt", "Lien Amount", "Consideration"]) or extract_money(row_text),
-                    legal=extract_best(headers, row_map, ["Legal", "Description", "Property", "Subdivision", "Remarks", "Legal Description"]),
-                    clerk_url=urljoin(base_url, link["href"]) if link else "",
-                )
-
-                if any([record.doc_num, record.doc_type, record.filed, record.owner, record.grantee, record.legal]):
-                    if record_matches_category(record, category):
-                        parsed.append(record)
-            except Exception as exc:
-                logger.warning("Skipping bad result row for %s: %s", category.cat, exc)
-    return parsed
+    return False
 
 
-def record_matches_category(record: RawRecord, category: CategoryConfig) -> bool:
-    blob = " | ".join([record.doc_type, record.owner, record.grantee, record.legal, record.amount, record.doc_num, record.cat_label]).upper()
-
-    if category.post_filter_terms:
-        if not any(term.upper() in blob for term in category.post_filter_terms):
-            if category.instrument_label.upper() not in blob:
-                return False
-
-    if category.negative_filter_terms and any(term.upper() in blob for term in category.negative_filter_terms):
-        return False
-
-    return True
-
-
-async def prep_search_form(page: Page, category: CategoryConfig, from_date: str, to_date: str) -> None:
-    url = GSCCCA_LIEN_URL if category.source_kind == "lien" else GSCCCA_REAL_ESTATE_URL
-    await page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
-    await page.wait_for_timeout(1000)
-
-    county_select = await find_select_with_option(page, "GWINNETT")
-    if county_select is None:
-        raise RuntimeError(f"County select not found for {category.cat}")
-
-    instrument_select = await find_select_with_option(page, category.instrument_label)
-    if instrument_select is None:
-        raise RuntimeError(f"Instrument select not found for {category.cat}: {category.instrument_label}")
-
-    await set_date_range_fields(page, from_date, to_date)
+async def click_first_matching(page: Page, texts: Sequence[str]) -> bool:
+    for text in texts:
+        try:
+            button = page.get_by_role("button", name=re.compile(text, re.I))
+            if await button.count() > 0:
+                await button.first.click()
+                return True
+        except Exception:
+            pass
+        try:
+            link = page.get_by_role("link", name=re.compile(text, re.I))
+            if await link.count() > 0:
+                await link.first.click()
+                return True
+        except Exception:
+            pass
+    return False
 
 
-@retryable_async
-async def search_one_prefix(page: Page, category: CategoryConfig, prefix: str, from_date: str, to_date: str) -> List[RawRecord]:
-    logger.info("Starting %s prefix %s", category.cat, prefix)
+def classify_notice(text: str, fallback_cat: str) -> Tuple[str, str]:
+    blob = text.upper()
 
-    await prep_search_form(page, category, from_date, to_date)
-    await set_name_prefix(page, prefix)
+    if "LIS PENDENS" in blob:
+        return "LP", CATEGORY_LABELS["LP"]
+    if "FORECLOSURE" in blob:
+        return "NOFC", CATEGORY_LABELS["NOFC"]
+    if "TAX SALE" in blob or "TAX DEED" in blob or "TAX EXECUTION" in blob:
+        return "TAXDEED", CATEGORY_LABELS["TAXDEED"]
+    if "MECHANIC LIEN" in blob or "MATERIALMEN" in blob:
+        return "LNMECH", CATEGORY_LABELS["LNMECH"]
+    if "HOMEOWNERS ASSOCIATION" in blob or "HOA" in blob:
+        return "LNHOA", CATEGORY_LABELS["LNHOA"]
+    if "PROBATE" in blob or "ESTATE" in blob or "ADMINISTRATOR" in blob or "EXECUTOR" in blob:
+        return "PRO", CATEGORY_LABELS["PRO"]
+    if "JUDGMENT" in blob:
+        return "JUD", CATEGORY_LABELS["JUD"]
+    if "LIEN" in blob:
+        return "LN", CATEGORY_LABELS["LN"]
 
-    try:
-        await click_search(page)
-    except Exception as exc:
-        logger.warning("Search click failed for %s %s: %s", category.cat, prefix, exc)
-        return []
+    return fallback_cat, CATEGORY_LABELS.get(fallback_cat, fallback_cat)
+
+
+def parse_notice_text_to_record(text: str, url: str, fallback_cat: str) -> RawRecord:
+    full_text = clean_text(text)
+    cat, cat_label = classify_notice(full_text, fallback_cat)
+
+    owner = extract_first_match(
+        [
+            r"(?:grantor|owner|defendant|estate of|decedent)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
+            r"(?:against|re:|regarding)\s+([A-Z][A-Z0-9 ,.'&\-]{4,})",
+        ],
+        full_text,
+    )
+
+    grantee = extract_first_match(
+        [
+            r"(?:grantee|plaintiff|claimant|secured creditor|creditor)\s*[:\-]\s*([A-Z0-9 ,.'&\-]+)",
+        ],
+        full_text,
+    )
+
+    legal = extract_first_match(
+        [
+            r"(?:property address|premises known as)\s*[:\-]?\s*([0-9A-Z ,.#'\-]+GA \d{5})",
+            r"(?:legal description)\s*[:\-]\s*(.+?)(?:amount|book|page|$)",
+        ],
+        full_text,
+    )
+
+    filed = extract_first_match(
+        [
+            r"(?:date filed|filed|recorded|publication date)\s*[:\-]?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4})",
+            r"([A-Z][a-z]+ \d{1,2}, \d{4})",
+        ],
+        full_text,
+    )
+
+    doc_num = extract_first_match(
+        [
+            r"(?:document no\.?|doc(?:ument)? no\.?|instrument no\.?|case no\.?|civil action no\.?)\s*[:\-]?\s*([A-Z0-9\-]+)",
+            r"(?:book\s*\d+\s*page\s*\d+)",
+        ],
+        full_text,
+    )
+
+    amount = extract_money(full_text)
+
+    if not owner:
+        # Best-effort uppercase person/org chunks
+        candidates = re.findall(r"\b[A-Z][A-Z ,.'&\-]{5,}\b", full_text)
+        owner = clean_text(candidates[0]) if candidates else ""
+
+    doc_type = CATEGORY_LABELS.get(cat, cat_label)
+
+    return RawRecord(
+        doc_num=doc_num,
+        doc_type=doc_type,
+        filed=filed,
+        cat=cat,
+        cat_label=cat_label,
+        owner=owner,
+        grantee=grantee,
+        amount=amount,
+        legal=legal,
+        clerk_url=url,
+        notice_text=full_text,
+    )
+
+
+async def scrape_public_notice_search(page: Page, category_code: str, search_term: str, from_date: str, to_date: str) -> List[RawRecord]:
+    records: List[RawRecord] = []
+
+    logger.info("Georgia Public Notice search: %s | term=%s", category_code, search_term)
+
+    await page.goto(PUBLIC_NOTICE_URL, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
+    await page.wait_for_timeout(1200)
+
+    await try_fill_by_label(page, ["Search"], search_term)
+    await try_select_by_label(page, ["County"], TARGET_COUNTY)
+
+    # Best-effort date handling
+    await try_fill_by_label(page, ["From"], from_date)
+    await try_fill_by_label(page, ["To"], to_date)
+
+    clicked = await click_first_matching(page, ["Search", "Advanced Search"])
+    if not clicked:
+        raise RuntimeError("Could not submit Georgia Public Notice search")
 
     try:
         await page.wait_for_load_state("networkidle", timeout=PER_SEARCH_TIMEOUT_MS)
     except PlaywrightTimeoutError:
-        logger.warning("Timed out waiting for results: %s %s", category.cat, prefix)
+        logger.warning("Public notice search timed out after submit for term=%s", search_term)
 
     await page.wait_for_timeout(PAGE_WAIT_MS)
 
-    results: List[RawRecord] = []
-    page_num = 1
-
+    current_page = 1
     while True:
         html = await page.content()
-        page_records = parse_result_tables(html, page.url, category)
-        logger.info("%s prefix %s page %s -> %s rows", category.cat, prefix, page_num, len(page_records))
-        results.extend(page_records)
+        soup = BeautifulSoup(html, "lxml")
 
-        if page_num >= MAX_PAGES_PER_PREFIX:
+        # Detail links often include "Public Notice Detail" breadcrumb or result anchors.
+        candidate_links = []
+        for a in soup.find_all("a", href=True):
+            href = clean_text(a.get("href"))
+            text = clean_text(a.get_text(" ", strip=True))
+            href_upper = href.upper()
+            text_upper = text.upper()
+            if "DETAIL" in href_upper or "DETAIL" in text_upper or "NOTICE" in text_upper:
+                full = urljoin(page.url, href)
+                candidate_links.append((full, text))
+
+        seen_links = set()
+        for detail_url, link_text in candidate_links:
+            if detail_url in seen_links:
+                continue
+            seen_links.add(detail_url)
+
+            try:
+                detail_page = await page.context.new_page()
+                await detail_page.goto(detail_url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
+                try:
+                    await detail_page.wait_for_load_state("networkidle", timeout=7000)
+                except Exception:
+                    pass
+                detail_html = await detail_page.content()
+                detail_soup = BeautifulSoup(detail_html, "lxml")
+                detail_text = clean_text(detail_soup.get_text(" ", strip=True))
+                await detail_page.close()
+
+                if TARGET_COUNTY.upper() not in detail_text.upper() and "GWINNETT" not in detail_text.upper():
+                    continue
+
+                record = parse_notice_text_to_record(detail_text, detail_url, category_code)
+
+                # keep only recent-ish records if a date was parsed and it's outside window
+                filed_dt = parse_date_text(record.filed)
+                from_dt = parse_date_text(from_date)
+                to_dt = parse_date_text(to_date)
+                if filed_dt and from_dt and to_dt:
+                    if not (from_dt <= filed_dt <= to_dt):
+                        continue
+
+                records.append(record)
+            except Exception as exc:
+                logger.warning("Skipping bad public notice detail %s: %s", detail_url, exc)
+
+        logger.info("Public notice term=%s page=%s -> cumulative %s rows", search_term, current_page, len(records))
+
+        if current_page >= MAX_RESULTS_PAGES:
             break
 
-        moved = await next_page(page)
+        moved = False
+        try:
+            nxt = page.get_by_role("link", name=re.compile(r"next", re.I))
+            if await nxt.count() > 0:
+                await nxt.first.click()
+                moved = True
+        except Exception:
+            moved = False
+
         if not moved:
             break
-        page_num += 1
 
-    return results
+        try:
+            await page.wait_for_load_state("networkidle", timeout=PER_SEARCH_TIMEOUT_MS)
+        except Exception:
+            pass
+        await page.wait_for_timeout(PAGE_WAIT_MS)
+        current_page += 1
+
+    return records
 
 
-async def scrape_category_with_prefixes(page: Page, category: CategoryConfig, from_date: str, to_date: str) -> List[RawRecord]:
+async def scrape_public_notices(from_date: str, to_date: str) -> List[RawRecord]:
     all_records: List[RawRecord] = []
     seen = set()
-
-    for prefix in GSCCCA_PREFIXES:
-        try:
-            prefix_records = await search_one_prefix(page, category, prefix, from_date, to_date)
-            for record in prefix_records:
-                key = (
-                    clean_text(record.doc_num),
-                    clean_text(record.doc_type),
-                    clean_text(record.filed),
-                    normalize_name(record.owner),
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                all_records.append(record)
-        except Exception as exc:
-            logger.warning("Prefix %s failed for %s: %s", prefix, category.cat, exc)
-
-    logger.info("%s total unique rows after prefix sweep -> %s", category.cat, len(all_records))
-    return all_records
-
-
-async def scrape_all_categories(from_date: str, to_date: str) -> List[RawRecord]:
-    all_records: List[RawRecord] = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
         context: BrowserContext = await browser.new_context(user_agent=USER_AGENT)
         page = await context.new_page()
 
-        for category in CATEGORY_CONFIGS:
+        for cat_code, term in SEARCH_TERMS:
             try:
-                logger.info("Searching category %s (%s)", category.cat, category.cat_label)
-                records = await scrape_category_with_prefixes(page, category, from_date, to_date)
-                all_records.extend(records)
+                rows = await scrape_public_notice_search(page, cat_code, term, from_date, to_date)
+                for row in rows:
+                    key = (
+                        clean_text(row.doc_num),
+                        clean_text(row.filed),
+                        normalize_name(row.owner),
+                        row.cat,
+                        clean_text(row.clerk_url),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    all_records.append(row)
             except Exception as exc:
-                logger.exception("Category %s failed and will be skipped: %s", category.cat, exc)
+                logger.warning("Public notice search failed for %s / %s: %s", cat_code, term, exc)
 
         await context.close()
         await browser.close()
 
-    logger.info("Scraped %s raw records before enrichment/dedupe", len(all_records))
+    logger.info("Scraped %s raw notice records before enrichment/dedupe", len(all_records))
     return all_records
 
 
@@ -901,6 +773,7 @@ def flags_for_record(record: LeadRecord, lookback_cutoff: date) -> List[str]:
     flags: List[str] = []
     cat = record.cat.upper()
     owner_norm = normalize_name(record.owner)
+    blob = f"{record.doc_type} {record.notice_text}".upper()
 
     if cat == "LP":
         flags.append("Lis pendens")
@@ -908,7 +781,7 @@ def flags_for_record(record: LeadRecord, lookback_cutoff: date) -> List[str]:
         flags.append("Pre-foreclosure")
     if cat in {"JUD", "CCJ", "DRJUD"}:
         flags.append("Judgment lien")
-    if cat in {"LNCORPTX", "LNIRS", "LNFED"}:
+    if cat in {"LNCORPTX", "LNIRS", "LNFED"} or "TAX" in blob:
         flags.append("Tax lien")
     if cat == "LNMECH":
         flags.append("Mechanic lien")
@@ -971,11 +844,35 @@ def enrich_records(raw_records: List[RawRecord], parcel_index: Dict[str, Dict[st
 def build_json_payload(records: List[LeadRecord], from_date: str, to_date: str) -> Dict[str, Any]:
     return {
         "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-        "source": "Gwinnett County Clerk / GSCCCA + Gwinnett Ownership Data",
+        "source": "Georgia Public Notice + Gwinnett Ownership Data",
         "date_range": {"from": from_date, "to": to_date, "lookback_days": LOOKBACK_DAYS},
         "total": len(records),
         "with_address": sum(1 for r in records if r.prop_address),
-        "records": [asdict(r) for r in records],
+        "records": [
+            {
+                "doc_num": r.doc_num,
+                "doc_type": r.doc_type,
+                "filed": r.filed,
+                "cat": r.cat,
+                "cat_label": r.cat_label,
+                "owner": r.owner,
+                "grantee": r.grantee,
+                "amount": r.amount,
+                "legal": r.legal,
+                "prop_address": r.prop_address,
+                "prop_city": r.prop_city,
+                "prop_state": r.prop_state,
+                "prop_zip": r.prop_zip,
+                "mail_address": r.mail_address,
+                "mail_city": r.mail_city,
+                "mail_state": r.mail_state,
+                "mail_zip": r.mail_zip,
+                "clerk_url": r.clerk_url,
+                "flags": r.flags,
+                "score": r.score,
+            }
+            for r in records
+        ],
     }
 
 
@@ -1035,7 +932,7 @@ def write_ghl_export(records: List[LeadRecord]) -> None:
                     "Amount/Debt Owed": record.amount,
                     "Seller Score": record.score,
                     "Motivated Seller Flags": "; ".join(record.flags),
-                    "Source": "Gwinnett County Clerk / GSCCCA",
+                    "Source": "Georgia Public Notice",
                     "Public Records URL": record.clerk_url,
                 }
             )
@@ -1055,15 +952,11 @@ async def async_main() -> int:
 
     logger.info("============================================================")
     logger.info("Gwinnett Motivated Seller Scraper")
-    logger.info("Clerk portal   : %s", CLERK_PORTAL_URL)
-    logger.info("Real estate    : %s", GSCCCA_REAL_ESTATE_URL)
-    logger.info("Lien search    : %s", GSCCCA_LIEN_URL)
-    logger.info("Parcel bulk url: %s", PROPERTY_APPRAISER_BULK_DATA_URL or "<not provided>")
-    logger.info("Range          : %s -> %s (%s days)", from_date, to_date, LOOKBACK_DAYS)
-    logger.info("Types          : %s", ", ".join(cfg.cat for cfg in CATEGORY_CONFIGS))
-    logger.info("Prefixes       : %s", "".join(GSCCCA_PREFIXES))
-    logger.info("Per-search ms  : %s", PER_SEARCH_TIMEOUT_MS)
-    logger.info("Max pages      : %s", MAX_PAGES_PER_PREFIX)
+    logger.info("Notice source   : %s", PUBLIC_NOTICE_URL)
+    logger.info("Parcel bulk url : %s", PROPERTY_APPRAISER_BULK_DATA_URL or "<not provided>")
+    logger.info("County          : %s", TARGET_COUNTY)
+    logger.info("Range           : %s -> %s (%s days)", from_date, to_date, LOOKBACK_DAYS)
+    logger.info("Search terms    : %s", ", ".join(f"{cat}:{term}" for cat, term in SEARCH_TERMS))
     logger.info("============================================================")
 
     parcel_index: Dict[str, Dict[str, str]] = {}
@@ -1072,7 +965,7 @@ async def async_main() -> int:
     except Exception as exc:
         logger.exception("Parcel enrichment failed. Continuing without parcel data: %s", exc)
 
-    raw_records = await scrape_all_categories(from_date, to_date)
+    raw_records = await scrape_public_notices(from_date, to_date)
     lookback_cutoff = today - timedelta(days=7)
     records = enrich_records(raw_records, parcel_index, lookback_cutoff)
 
