@@ -1,0 +1,12 @@
+{
+  "fetched_at": "",
+  "source": "",
+  "date_range": {
+    "from": "",
+    "to": "",
+    "lookback_days": 7
+  },
+  "total": 0,
+  "with_address": 0,
+  "records": []
+}
