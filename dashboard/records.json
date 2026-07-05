@@ -1,9 +1,9 @@
 {
-  "fetched_at": "2026-07-04T09:20:32Z",
+  "fetched_at": "2026-07-05T09:40:46Z",
   "source": "Georgia Public Notice + Gwinnett Ownership Data",
   "date_range": {
-    "from": "06/27/2026",
-    "to": "07/04/2026",
+    "from": "06/28/2026",
+    "to": "07/05/2026",
     "lookback_days": 7
   },
   "total": 0,
