@@ -1,90 +1,12 @@
 {
-  "fetched_at": "2026-09-20T12:00:26Z",
+  "fetched_at": "2026-09-21T13:35:07Z",
   "source": "Georgia Public Notice + Gwinnett Ownership Data",
   "date_range": {
-    "from": "09/13/2026",
-    "to": "09/20/2026",
+    "from": "09/14/2026",
+    "to": "09/21/2026",
     "lookback_days": 7
   },
-  "total": 3,
+  "total": 0,
   "with_address": 0,
-  "records": [
-    {
-      "doc_num": "",
-      "doc_type": "Notice of Foreclosure",
-      "filed": "September 20, 2026",
-      "cat": "NOFC",
-      "cat_label": "Notice of Foreclosure",
-      "owner": "PUBLIC NOTICE",
-      "grantee": "",
-      "amount": "",
-      "legal": "",
-      "prop_address": "",
-      "prop_city": "",
-      "prop_state": "",
-      "prop_zip": "",
-      "mail_address": "",
-      "mail_city": "",
-      "mail_state": "",
-      "mail_zip": "",
-      "clerk_url": "https://www.georgiapublicnotice.com/(S(zi4ww2hg1dgkg1ctqml2jryj))/search.aspx",
-      "flags": [
-        "New this week",
-        "Pre-foreclosure",
-        "Tax lien"
-      ],
-      "score": 55
-    },
-    {
-      "doc_num": "",
-      "doc_type": "Notice of Foreclosure",
-      "filed": "September 19, 2026",
-      "cat": "NOFC",
-      "cat_label": "Notice of Foreclosure",
-      "owner": "OKAY HAYNES HIS ESTATE ... click 'view' to open the full text. The Eatonton Messenger Thursday, September 17, 2026 City",
-      "grantee": "",
-      "amount": "",
-      "legal": "",
-      "prop_address": "",
-      "prop_city": "",
-      "prop_state": "",
-      "prop_zip": "",
-      "mail_address": "",
-      "mail_city": "",
-      "mail_state": "",
-      "mail_zip": "",
-      "clerk_url": "https://www.georgiapublicnotice.com/(S(dzee4cxd4js1nbslf1a0teaz))/search.aspx",
-      "flags": [
-        "New this week",
-        "Pre-foreclosure",
-        "Tax lien"
-      ],
-      "score": 55
-    },
-    {
-      "doc_num": "",
-      "doc_type": "Notice of Foreclosure",
-      "filed": "",
-      "cat": "NOFC",
-      "cat_label": "Notice of Foreclosure",
-      "owner": "O.C.G.A",
-      "grantee": "",
-      "amount": "",
-      "legal": "",
-      "prop_address": "",
-      "prop_city": "",
-      "prop_state": "",
-      "prop_zip": "",
-      "mail_address": "",
-      "mail_city": "",
-      "mail_state": "",
-      "mail_zip": "",
-      "clerk_url": "https://www.georgiapublicnotice.com/Public-Notice-Law.aspx",
-      "flags": [
-        "Pre-foreclosure",
-        "Tax lien"
-      ],
-      "score": 50
-    }
-  ]
+  "records": []
 }
